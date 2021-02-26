@@ -16,7 +16,7 @@
    "prereqs" : {
       "configure" : {
          "requires" : {
-            "Module::Build" : "0.4224"
+            "Module::Build" : 0.4224
          }
       },
       "runtime" : {
