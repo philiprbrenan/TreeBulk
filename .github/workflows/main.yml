@@ -1,0 +1,50 @@
+# Build and test CPAN module: TreeBulk
+
+name: Test
+
+on:
+  push
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install
+      run: |
+        sudo apt update
+        sudo apt -y install build-essential tree
+
+    - name: Install JSON
+      run: |
+        sudo cpan install JSON
+
+    - name: Install Date::Manip
+      run: |
+        sudo cpan install Date::Manip
+
+    - name: Install Digest::SHA1
+      run: |
+        sudo cpan install Digest::SHA1
+
+    - name: Install Module::Build
+      run: |
+        sudo cpan install Module::Build
+
+    - name: Install Math::Permute::List
+      run: |
+        sudo cpan install Math::Permute::List
+
+    - name: Install Data::Table::Text
+      run: |
+        sudo cpan install Data::Table::Text
+
+
+
+    - name: Test
+      run: |
+        tree
+        perl Build.PL
+        perl Build test
