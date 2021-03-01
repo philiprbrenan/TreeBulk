@@ -5,7 +5,7 @@
 #-------------------------------------------------------------------------------
 # podDocumentation
 package Tree::Bulk;
-our $VERSION = "20210301";
+our $VERSION = "20210302";
 use warnings FATAL => qw(all);
 use strict;
 use Carp qw(confess cluck);
@@ -164,13 +164,12 @@ sub setHeight($)                                                                
   $tree->height = 1 + maximum($l, $r);
  } # setHeight
 
-=pod
-  Rotate left
-    p                  p
-      n                  r
-    l   r              n   R
-       L R           l  L
-=cut
+# Rotate left
+
+#    p                  p
+#      n                  r
+#    l   r              n   R
+#       L R           l  L
 
 sub rotateLeft($)                                                               #P Rotate a node left
  {my ($n) = @_;                                                                 # Node
@@ -185,7 +184,7 @@ sub rotateLeft($)                                                               
   $n->right = $L; $L->up = $n if $L;
   setHeight $_ for  $n, $r, $p;
   $r->refill;
- }
+ } # rotateLeft
 
 sub rotateRight($)                                                              #P Rotate a node right
  {my ($n) = @_;                                                                 # Node
@@ -198,25 +197,22 @@ sub rotateRight($)                                                              
   $p->{$n->isLeftChild ? Left : Right} = $l; $l->up = $p;
   $l->right = $n; $n->up = $l;
   $n->left  = $R; $R->up = $n if $R;
-#  updateHeights $n;
   setHeight $_ for  $n, $l, $p;
   $l->refill;
- }
+ } # rotateLeft
 
-=pod
-Balance - make the deepest sub tree one less deep
-    1                1
-      2                     5
-        6            2         6
-      5                4
-    4                    3
-  3
-=cut
+# Balance - make the deepest sub tree one less deep
+
+#    1                1
+#      2                     5
+#        6            2         6
+#      5                4
+#    4                    3
+#  3
 
 sub balance($)                                                                  # Balance a node
  {my ($t) = @_;                                                                 # Tree
   confess unless $t;
-#check($t);
   my ($l, $r) = (actualHeight($t->left), actualHeight($t->right));
 
   if   ($l > 2 * $r + 1)                                                        # Rotate right
@@ -235,7 +231,6 @@ sub balance($)                                                                  
      }
     $t->rotateLeft;
    }
-#check($t);
 
   $t
  } # balance
@@ -396,7 +391,7 @@ sub unchain($)                                                                  
   my $c = $t->left // $t->right;                                                # Not duplex so at most one of these
   $p->{$t->isLeftChild ? Left : Right} = $c;                                    # Unchain
   $c->up = $p if $c;
-  $t->up = undef;  #need to keep yhis so balance can continue up the tree                                                              # Free the middle link
+  $t->up = undef;
 
   if    (my $l = $p->left)  {$l->setHeights($l->height)}                        # Set heights from a known point
   elsif (my $r = $p->right) {$r->setHeights($r->height)}
@@ -609,8 +604,8 @@ sub check($)                                                                    
      }
    }->($tree);
 
-  if ($tree->height < $maxHeight)
-   {say STDERR "AAAA height failure", $tree->name;
+  if ($tree->height < $maxHeight)                                               # Check tree heights
+   {cluck "Tree height failure at: ", $tree->name;
     save($tree);
    }
  } # check
@@ -704,7 +699,7 @@ END
 Bulk Tree operations
 
 
-Version "20210226".
+Version "20210302".
 
 
 The following sections describe the methods in each functional area of this
@@ -2655,7 +2650,7 @@ test unless caller;
 
 1;
 # podDocumentation
-#__DATA__
+__DATA__
 use Time::HiRes qw(time);
 use Test::More;
 
@@ -2669,7 +2664,6 @@ else
  }
 
 my $start = time;                                                               # Tests
-#goto latest;
 
 if (1)                                                                          #Tsimplex
  {lll "SetHeights";
@@ -3383,7 +3377,7 @@ if (1)                                                                          
     is_deeply $t->actualHeight, 1;
    }
 
-  randomLoad(222, 1, 11);
+  randomLoad(222, 1, 11);                                                       # Random loads
   randomLoad(222, 8, 8);
   randomLoad(222, 4, 9);
  }
