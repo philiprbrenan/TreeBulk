@@ -13,8 +13,6 @@ use Data::Dump qw(dump);
 use Data::Table::Text qw(:all);
 use feature qw(say current_sub);
 
-my $debug = 0;                                                                  # Print debugging information if true
-
 sub saveLog($)                                                                  #P Save a result to the log file if we are developing
  {my ($string) = @_;                                                            # String to save
   my $l = q(/home/phil/perl/z/bulkTree/zzz.txt);                                # Log file if available
@@ -3356,8 +3354,7 @@ if (1)                                                                          
     srand(1);                                                                   # Same randomization
     my $t = Tree::Bulk::new->setKeysPerNode($keys);
     for my $r(randomizeArray 1..$N)
-     {$debug = $r == 74;
-      $t->insert($r, 2 * $r);
+     {$t->insert($r, 2 * $r);
       $t->check;
      }
 
