@@ -5,13 +5,15 @@
 #-------------------------------------------------------------------------------
 # podDocumentation
 package Tree::Bulk;
-our $VERSION = "20210226";
+our $VERSION = "20210301";
 use warnings FATAL => qw(all);
 use strict;
 use Carp qw(confess cluck);
 use Data::Dump qw(dump);
 use Data::Table::Text qw(:all);
 use feature qw(say current_sub);
+
+my $debug = 0;                                                                  # Print debugging information if true
 
 sub saveLog($)                                                                  #P Save a result to the log file if we are developing
  {my ($string) = @_;                                                            # String to save
@@ -48,7 +50,6 @@ sub node(;$$$$)                                                                 
    {if ($side)
      {$up->{$side} = $t;
       $up->setHeights(2);
-      $up->balance;
      }
     else
      {confess 'Specify side' if !$side;
@@ -90,6 +91,15 @@ sub simplex($)                                                                  
   $tree->right xor $tree->left             ? $tree : undef
  }
 
+sub simplexWithLeaf($)                                                          # Return the tree if it has either a left child or a right child but not both and the child it has a leaf.
+ {my ($tree) = @_;                                                              # Tree
+  confess unless $tree;
+  return undef unless $tree->right xor $tree->left;
+  return undef if $tree->right and !$tree->right->leaf;
+  return undef if $tree->left  and !$tree->left ->leaf;
+  $tree
+ }
+
 sub empty($)                                                                    # Return the tree if it is empty
  {my ($tree) = @_;                                                              # Tree
   confess unless $tree;
@@ -116,42 +126,43 @@ sub isRightChild($)                                                             
 
 sub name($)                                                                     # Name of a tree
  {my ($tree) = @_;                                                              # Tree
+  confess unless $tree;
   join ' ', $tree->keys->@*
  }
 
-sub setHeights($$)                                                              # Set heights along path to root
- {my ($tree, $from) = @_;                                                       # Tree, height for this node
+sub names($)                                                                    # Names of all nodes in a tree in order
+ {my ($tree) = @_;                                                              # Tree
   confess unless $tree;
-  confess unless $from;
+  join ' ', map {$_->name} $tree->inorder;
+ }
+
+sub setHeights($)                                                               #P Set heights along path to root
+ {my ($tree) = @_;                                                              # Tree
+  confess unless $tree;
   for(my $n = $tree; $n; $n = $n->up)
-   {my $h = $n->height;
-    if ($n->isLeftChild)
-     {my $r = $n->right ? $n->right->height + 1 : 1;
-      my $l = $from;
-      my $h = max($l, $r);
-      $n->height = $h;
-     }
-    else
-     {my $l = $n->left ? $n->left->height + 1 : 1;
-      my $r = $from;
-      my $h = max($l, $r);
-      my $c = max($l, $r);
-      $n->height = $h;
-     }
-    ++$from
+   {$n->setHeight;
+    $n->balance;
    }
  } # setHeights
 
-sub actualHeight($)                                                             # Get the height of a node
+sub actualHeight($)                                                             #P Get the height of a node
  {my ($tree) = @_;                                                              # Tree
   return 0 unless $tree;
   $tree->height
  }
 
-sub maximum($$)                                                                 # Maximum of two numbers
+sub maximum($$)                                                                 #P Maximum of two numbers
  {my ($a, $b) = @_;                                                             # First, second
   $a > $b ? $a : $b
  }
+
+sub setHeight($)                                                                #P Set height of a tree from its left and right trees
+ {my ($tree) = @_;                                                              # Tree
+  confess unless $tree;
+  my $l = actualHeight($tree->left);
+  my $r = actualHeight($tree->right);
+  $tree->height = 1 + maximum($l, $r);
+ } # setHeight
 
 =pod
   Rotate left
@@ -161,45 +172,35 @@ sub maximum($$)                                                                 
        L R           l  L
 =cut
 
-sub updateHeights($)                                                            #P Update height of rotated node
- {my ($n) = @_;                                                                 # Tree
-  if (my $l = $n->left)
-   {$l->setHeights($l->height);
-   }
-  elsif (my $r = $n->right)
-   {$r->setHeights($r->height);
-   }
-  else
-   {$n->setHeights(1);
-   }
- }
-
 sub rotateLeft($)                                                               #P Rotate a node left
  {my ($n) = @_;                                                                 # Node
   confess unless $n;
   my $p     = $n->up;
-  confess unless $p;
+  return unless $p;
   my $r     = $n->right;
-  confess unless $r;
+  return unless $r;
   my $L     = $r->left;
   $p->{$n->isRightChild ? Right : Left} = $r; $r->up = $p;
   $r->left  = $n; $n->up = $r;
   $n->right = $L; $L->up = $n if $L;
-  updateHeights $n;
+  setHeight $_ for  $n, $r, $p;
+  $r->refill;
  }
 
 sub rotateRight($)                                                              #P Rotate a node right
  {my ($n) = @_;                                                                 # Node
   confess unless $n;
   my $p     = $n->up;
-  confess unless $p;
+  return unless $p;
   my $l     = $n->left;
-  confess unless $l;
+  return unless $l;
   my $R     = $l->right;
   $p->{$n->isLeftChild ? Left : Right} = $l; $l->up = $p;
   $l->right = $n; $n->up = $l;
   $n->left  = $R; $R->up = $n if $R;
-  updateHeights $n;
+#  updateHeights $n;
+  setHeight $_ for  $n, $l, $p;
+  $l->refill;
  }
 
 =pod
@@ -213,30 +214,30 @@ Balance - make the deepest sub tree one less deep
 =cut
 
 sub balance($)                                                                  # Balance a node
- {my ($tree) = @_;                                                              # Tree
-  confess unless $tree;
-  for(my $n = $tree; $n->up; $n = $n->up)                                       # Balance our way up the tree
-   {my ($l, $r) = (actualHeight($n->left), actualHeight($n->right));
+ {my ($t) = @_;                                                                 # Tree
+  confess unless $t;
+#check($t);
+  my ($l, $r) = (actualHeight($t->left), actualHeight($t->right));
 
-    if   ($l > 2 * $r + 1)                                                      # Rotate right
-     {if (my $l = $n->left)                                                     # Counter balance if necessary
-       {if (actualHeight($l->right) > actualHeight($l->left))
-         {rotateLeft $l;
-         }
+  if   ($l > 2 * $r + 1)                                                        # Rotate right
+   {if (my $l = $t->left)                                                       # Counter balance if necessary
+     {if (actualHeight($l->right) > actualHeight($l->left))
+       {$l->rotateLeft
        }
-      rotateRight $n;
      }
-    elsif ($r > 2 * $l + 1)                                                     # Rotate left
-     {if (my $r = $n->right)                                                    # Counter balance if necessary
-       {if (actualHeight($r->left) > actualHeight($r->right))
-         {rotateRight $r;
-         }
-       }
-      rotateLeft $n;
-     }
+    $t->rotateRight;
    }
+  elsif ($r > 2 * $l + 1)                                                       # Rotate left
+   {if (my $r = $t->right)                                                      # Counter balance if necessary
+     {if (actualHeight($r->left) > actualHeight($r->right))
+       {$r->rotateRight
+       }
+     }
+    $t->rotateLeft;
+   }
+#check($t);
 
-  $tree
+  $t
  } # balance
 
 sub insertUnchecked($$$)                                                        #P Insert a key and some data into a tree
@@ -386,80 +387,78 @@ sub inorder($)                                                                  
   @n
  }
 
+sub unchain($)                                                                  #P Remove a tree from the middle of a chain. A leaf is considered to be in the middle of a chain and so can be removed with this method
+ {my ($t) = @_;                                                                 # Tree
+  confess unless $t;
+  confess "Duplex tree cannot be unchained" if duplex $t;
+  confess        "Root cannot be unchained" unless my $p = $t->up;
+
+  my $c = $t->left // $t->right;                                                # Not duplex so at most one of these
+  $p->{$t->isLeftChild ? Left : Right} = $c;                                    # Unchain
+  $c->up = $p if $c;
+  $t->up = undef;  #need to keep yhis so balance can continue up the tree                                                              # Free the middle link
+
+  if    (my $l = $p->left)  {$l->setHeights($l->height)}                        # Set heights from a known point
+  elsif (my $r = $p->right) {$r->setHeights($r->height)}
+  else                      {$p->setHeights(1)}
+
+  $p->balance;                                                                  # Rebalance parent
+
+  $p                                                                            # Unchained node
+ } # unchain
+
+sub refillFromRight($)                                                          #P Push a key to the target node from the next node
+ {my ($target) = @_;                                                            # Target tree
+
+  confess unless $target;
+  confess "No right"  unless              $target->right;                       # Ensure source will be in this sub tree
+  confess "No source" unless my $source = $target->next;                        # No source
+
+  while ($source->keys->@* > 0 and $target->keys->@* < $target->keysPerNode)    # Transfer fill from source
+   {push $target->keys->@*, shift  $source->keys->@*;
+    push $target->data->@*, shift  $source->data->@*;
+   }
+  $source->unchain if $source->empty;
+  $_->refill for $target, $source;
+ } # refillFromRight
+
+sub refillFromLeft($)                                                           #P Push a key to the target node from the previous node
+ {my ($target) = @_;                                                            # Target tree
+
+  confess unless $target;
+  confess "No left"   unless              $target->left;                        # Ensure source will be in this sub tree
+  confess "No source" unless my $source = $target->prev;                        # No source
+
+  while ($source->keys->@* > 0 and $target->keys->@* < $target->keysPerNode)    # Transfer fill from source
+   {unshift $target->keys->@*, pop $source->keys->@*;
+    unshift $target->data->@*, pop $source->data->@*;
+   }
+
+  $source->unchain if $source->empty;
+  $_->refill for $target, $source;
+ } # refillFromLeft
+
 sub refill($)                                                                   #P Refill a node so it has the expected number of keys
  {my ($tree) = @_;                                                              # Tree
   confess unless $tree;
-  my $refillFromRight; my $refillFromLeft; my $unchain;                         # Forward declare recursive methods
+  return if $tree->singleton;
+  return if $tree->keys->@* == $tree->keysPerNode;
 
-  my sub refill($)                                                              # Refill a non leaf node from a node further down the tree
-   {my ($target) = @_;                                                          # Target tree
-    confess unless $target;
-    if (empty $target)
-     {&$unchain($target)
-     }
-    elsif ($target->left)
-     {&$refillFromLeft($target)
-     }
-    elsif ($target->right)
-     {&$refillFromRight($target);
-     }
-   } # refill
-
-  $refillFromRight = sub                                                        # Push a key to the target node from the next node
-   {my ($target) = @_;                                                          # Target tree
-    confess unless $target;
-    confess "No right"      unless $target->right;                              # Ensure source will be in this sub tree
-    my $source = $target->next;
-    confess "No source"     unless $source;
-    while ($source->keys->@* > 0 and $target->keys->@* < $tree->keysPerNode and !$tree->singleton)
-     {push $target->keys->@*, shift  $source->keys->@*;
-      push $target->data->@*, shift  $source->data->@*;
-     }
-    refill $source;
-   }; # refillFromRight
-
-  $refillFromLeft = sub                                                         # Push a key to the target node from the previous node
-   {my ($target) = @_;                                                          # Target tree
-    confess unless $target;
-    confess "No left"       unless $target->left;                               # Ensure source will be in this sub tree
-    my $source = $target->prev;
-    confess "No source"     unless $source;
-    while ($source->keys->@* and $target->keys->@* < $tree->keysPerNode and !$tree->singleton)
-     {unshift $target->keys->@*, pop $source->keys->@*;
-      unshift $target->data->@*, pop $source->data->@*;
-     }
-    refill $source;
-   }; # refillFromLeft
-
-  $unchain = sub                                                                # Remove a tree from the middle of a chain. A leaf is considered to be in the middle of a chain and so can be removed with this method
-   {my ($t) = @_;                                                               # Tree
-    confess unless $t;
-    confess "Duplex tree cannot be unchained" if duplex $t;
-    confess        "Root cannot be unchained" unless my $p = $t->up;
-    my $r = $t->left // $t->right;                                              # Not duplex so at most one of these
-    $p->{$t->isLeftChild ? Left : Right} = $r;                                  # Unchain
-    $r->up = $p if $r;                                                          # Disconnect node
-    $t->up = undef;
-    $p->setHeights($r ? $r->height+1 : $p->leaf ? 1 : 2);                        # Make removed node into separate tree and reset heights of nodes above
-    $p->balance;                                                                # Rebalance parent
-    $t                                                                          # Unchained node
-   }; # unchain
-
-  while(!$tree->singleton and $tree->keys->@* < $tree->keysPerNode)             # Refill the node from neighboring leaf nodes
-   {if (empty($tree) and !isRoot $tree)                                         # Removal created an empty leaf that is not the root
-     {&$unchain($tree);                                                         # Unchain leaf
-      last;
-     }
-
-    if    (leaf  $tree) {last}                                                  # No action required on leaf that is not empty
-    elsif (right $tree) {&$refillFromRight($tree)}                              # Refill the root from the right as it is not a leaf
-    else                {&$refillFromLeft ($tree)}                              # Refill the root from the left as it is not a leaf and has no tree to the right
+  if ($tree->empty)                                                             # Remove an empty leaf that is not the root
+   {$tree->unchain unless $tree->isRoot;
    }
 
-  while($tree->keys->@* > $tree->keysPerNode)                                   # Empty node if over full
-   {my $d = pop $tree->data->@*;                                                # Data component
-    my $k = pop $tree->keys->@*;                                                # Key component
-    $tree->insertUnchecked($k, $d);                                             # Reinsert lower down
+  elsif ($tree->keys->@* < $tree->keysPerNode)                                  # Refill the node from neighboring leaf nodes
+   {if (!$tree->leaf)                                                           # Do not refill leaves
+     {$tree->refillFromRight if $tree->right;
+      $tree->refillFromLeft  if $tree->left;
+     }
+   }
+
+  else
+   {while($tree->keys->@* > $tree->keysPerNode)                                 # Empty node if over full
+     {$tree->insertUnchecked(pop $tree->keys->@*, pop $tree->data->@*);         # Reinsert lower down
+     }
    }
  } # refill
 
@@ -470,7 +469,7 @@ sub delete($$)                                                                  
 
   sub                                                                           # Find then delete the key in the sub-tree
    {my ($tree) = @_;                                                            # Sub-tree
-    confess "No tree" unless $tree;
+    return unless $tree;
     return unless $tree->keys->@*;                                              # Empty tree
     if    ($key < $tree->keys->[ 0]) {__SUB__->($tree->left)}                   # Less than least key so go left
     elsif ($key > $tree->keys->[-1]) {__SUB__->($tree->right)}                  # Greater than most key so go right
@@ -482,7 +481,7 @@ sub delete($$)                                                                  
         push @k, $tree->keys->[$i];
        }
       $tree->keys = \@k; $tree->data = \@d;
-      $tree->refill;
+      $tree->refill;                                                            # Refill the tree
      }
    }->($tree);
  } # delete
@@ -518,9 +517,9 @@ sub setKeysPerNode($$)                                                          
  {my ($tree, $N) = @_;                                                          # Tree, keys per node to be set
   confess unless $tree;
   confess unless $N and $N > 0;
-  $tree->keysPerNode =  $N;
-  $tree->refill;
-  $tree
+  $tree->keysPerNode =  $N;                                                     # Set
+  $tree->refill;                                                                # Refill if necessary
+  $tree                                                                         # Allow chaining
  } # setKeysPerNode
 
 sub printKeysAndData($)                                                         # Print the mapping from keys to data in a tree
@@ -538,39 +537,42 @@ sub printKeysAndData($)                                                         
   formatTableBasic(\@s)
  } # printKeysAndData
 
-sub checkLR($)                                                                  #P Confirm pointers in tree
+sub checkLRU($)                                                                 #P Confirm pointers in tree
  {my ($tree) = @_;                                                              # Tree
   my %seen;                                                                     # Nodes we have already seen
 
-  sub
-   {my ($tree) = @_;                                                            # Tree
+  sub                                                                           # Check pointers in a tree
+   {my ($tree, $dir) = @_;                                                      # Tree
     return unless $tree;
 
-    if ($seen{$tree->name}++)
-     {confess "Recursed into: ".$tree->name;
-     }
+    confess "Recursed $dir into: ".$tree->name if $seen{$tree->name}++;
 
-    __SUB__->($tree->left,  'left', $tree->name);
-    __SUB__->($tree->right, 'right', $tree->name);
+    __SUB__->($tree->left,  Left);
+    __SUB__->($tree->right, Right);
    }->($tree->root);
  }
 
 sub check($)                                                                    #P Confirm that each node in a tree is ordered correctly
  {my ($tree) = @_;                                                              # Tree
   confess unless $tree;
-  $tree->checkLR;
+  $tree->checkLRU;
+
+  my $maxHeight = 0;
 
   sub
    {my ($tree) = @_;                                                            # Tree
     return unless $tree;
 
-    __SUB__->($tree->left,  'left', $tree->name);
-    __SUB__->($tree->right, 'right', $tree->name);
+    __SUB__->($tree->left);
+    __SUB__->($tree->right);
 
     confess $tree->name unless $tree->keys->@* == $tree->data->@*;              # Check key count matches data count
-#    if (!$tree->leaf)
-#     {confess $tree->name unless $tree->keys->@* == $tree->keysPerNode;        # Check node is filled unless it is a leaf
-#     }
+
+    if ( !$tree->leaf and !$tree->isRoot                                        # Confirm that all interior nodes  are fully filled
+      and $tree->keys->@* != $tree->keysPerNode)
+     {confess "Interior node not full: "
+       .$tree->name."\n". $tree->root->printKeys;
+     }
 
     confess $tree->name unless $tree->isRoot or                                 # Node is either a root  or a left or right child
       $tree->up && $tree->up->left  && $tree == $tree->up->left or
@@ -582,20 +584,13 @@ sub check($)                                                                    
     confess 'Right:'.$tree->name if $tree->right and                            # Right child has correct parent
       !$tree->right->up || $tree->right->up != $tree;
 
-#     if ($tree->simplex and $tree->up and !$tree->up->isRoot and !$tree->up->duplex)
-#      {say STDERR "AAAA\n", $tree->up->up->printKeys;
-#       confess if $tree->simplex and $tree->up and !$tree->up->duplex;         # Simplex children must always have duplex parents
-#      }
+    if ($tree->simplex and !$tree->simplexWithLeaf and $tree->up                # Simplex children must always have duplex parents
+      and !$tree->up->isRoot and !$tree->up->duplex)
+     {confess "Simplex does not have duplex parent: ".$tree->name
+       ."\n".$tree->root->printKeys;
+     }
 
-#    if (!$tree->isRoot)                                                        # Check depth
-#     {my ($l, $r) = (actualHeight($tree->left), actualHeight($tree->right));
-#      if    ($l > 2 * $r + 1)
-#       {cluck "Unbalanced left l=$l r=$r ".$tree->name;
-#       }
-#      elsif ($r > 2 * $l + 1)
-#       {cluck "Unbalanced right l=$l r=$r ".$tree->name;
-#       }
-#     }
+    $maxHeight = $tree->height if $tree->height > $maxHeight;
 
     my @k  = $tree->keys->@*;                                                   # Check keys
        @k <= $tree->keysPerNode or confess "Too many keys:".scalar(@k);
@@ -612,7 +607,12 @@ sub check($)                                                                    
       confess  "Duplicate key: ",  $k[$i] if $k{$k[$i]}++;
       confess  "Undefined data: ", $k[$i] unless defined $d[$i];
      }
-   }->($tree)
+   }->($tree);
+
+  if ($tree->height < $maxHeight)
+   {say STDERR "AAAA height failure", $tree->name;
+    save($tree);
+   }
  } # check
 
 sub checkAgainstHash($%)                                                        #P Check a tree against a hash
@@ -620,7 +620,9 @@ sub checkAgainstHash($%)                                                        
 
   for my $k(keys %t)                                                            # Check we can find all the keys expected
    {my ($t) = @_;
-    confess unless find($t, $k) == $t{$k};
+    my $v = $t{$k};
+    confess "Cannot find $k" unless my $f = find($t, $k);
+    confess "Found $f but expected $v" unless $f == $v;
    }
 
   sub                                                                           # Check that the tree does not contain unexpected keys
@@ -865,61 +867,129 @@ B<Example:>
 
 
   if (1)
-   {lll "Rotate";
-    my  $t = Tree::Bulk::new->setKeysPerNode(1);
-    my  $a = node(1,2);
-    my  $b = node(2,4);
-    my  $c = node(3,6);
-    my  $d = node(4,8);
+   {lll "SetHeights";
+    my  $a = node(1,1)->setKeysPerNode(1);
+    my  $b = node(2,2)->setKeysPerNode(1);
+    my  $c = node(3,3)->setKeysPerNode(1);
+    my  $d = node(4,4)->setKeysPerNode(1);
+    my  $e = node(5,5);
     $a->right = $b; $b->up = $a;
     $b->right = $c; $c->up = $b;
     $c->right = $d; $d->up = $c;
-    $d->setHeights(1);
+    $d->right = $e; $e->up = $d;
 
+    is_deeply $a->printKeys, <<END;
+  SA0 1 1
+  Rr1 1   2->1
+  Rr2 1     3->2
+  Rr3 1       4->3
+  Rz4 1         5->4
+  END
+  #save $a;
 
-    ok $c->simplex;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
-
-
+    $e->setHeights(1);
     is_deeply $a->printKeys, <<END;
   SA0 4 1
   Rr1 3   2->1
-  Rr2 2     3->2
-  Rz3 1       4->3
-  END
-  #save $a;
-    $b->rotateLeft;
-    is_deeply $a->printKeys, <<END;
-  SA0 3 1
-  Lz2 1     2->3
-  Rd1 2   3->1
-  Rz2 1     4->3
+  Lz3 1       3->4
+  Rd2 2     4->2
+  Rz3 1       5->4
   END
   #save $a;
 
-    $c->rotateLeft; $c->setHeights(2);
-    is_deeply $a->printKeys, <<END;
-  SA0 4 1
-  Lz3 1       2->3
-  Ll2 2     3->4
-  Rl1 3   4->1
-  END
-  #save $a;
+    ok  $b->simplex;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
 
-    $d->rotateRight; $d->setHeights(1);
-    is_deeply $a->printKeys, <<END;
-  SA0 3 1
-  Lz2 1     2->3
-  Rd1 2   3->1
-  Rz2 1     4->3
-  END
-  #save $a;
 
-    $c->rotateRight; $c->setHeights(2);
+    ok !$c->simplex;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+
+    $c->balance;
     is_deeply $a->printKeys, <<END;
   SA0 4 1
   Rr1 3   2->1
-  Rr2 2     3->2
-  Rz3 1       4->3
+  Lz3 1       3->4
+  Rd2 2     4->2
+  Rz3 1       5->4
+  END
+  #save $a;
+
+    $b->balance;
+    is_deeply $a->printKeys, <<END;
+  SA0 4 1
+  Lr2 2     2->4
+  Rz3 1       3->2
+  Rd1 3   4->1
+  Rz2 1     5->4
+  END
+  #save $a;
+   }
+
+
+=head2 simplexWithLeaf($tree)
+
+Return the tree if it has either a left child or a right child but not both and the child it has a leaf.
+
+     Parameter  Description
+  1  $tree      Tree
+
+B<Example:>
+
+
+  if (1)
+   {lll "Balance";
+    my  $a = node(1,1)->setKeysPerNode(1); $a->height = 5;
+    my  $b = node(2,2)->setKeysPerNode(1); $b->height = 4;
+    my  $c = node(3,3)->setKeysPerNode(1); $c->height = 3;
+    my  $d = node(4,4)->setKeysPerNode(1); $d->height = 2;
+    my  $e = node(5,5);                    $e->height = 1;
+    $a->right = $b; $b->up = $a;
+    $b->right = $c; $c->up = $b;
+    $c->right = $d; $d->up = $c;
+    $d->right = $e; $e->up = $d;
+
+    $e->balance;
+    is_deeply $a->printKeys, <<END;
+  SA0 5 1
+  Rr1 4   2->1
+  Rr2 3     3->2
+  Rr3 2       4->3
+  Rz4 1         5->4
+  END
+  #save $a;
+
+    ok  $d->simplexWithLeaf;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+
+    ok !$c->simplexWithLeaf;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+
+    $d->balance;
+    is_deeply $a->printKeys, <<END;
+  SA0 5 1
+  Rr1 4   2->1
+  Rr2 3     3->2
+  Rr3 2       4->3
+  Rz4 1         5->4
+  END
+  #save $a;
+
+    $c->balance;
+    is_deeply $a->printKeys, <<END;
+  SA0 5 1
+  Rr1 3   2->1
+  Lz3 1       3->4
+  Rd2 2     4->2
+  Rz3 1       5->4
+  END
+  #save $a;
+
+    $b->balance;
+    is_deeply $a->printKeys, <<END;
+  SA0 4 1
+  Lr2 2     2->4
+  Rz3 1       3->2
+  Rd1 3   4->1
+  Rz2 1     5->4
   END
   #save $a;
    }
@@ -939,43 +1009,9 @@ B<Example:>
    {lll "Balance";
     my  $t = Tree::Bulk::new->setKeysPerNode(1);
 
-
     ok $t->empty;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
 
     ok $t->singleton;
-
-    my  $a = node(1,2);
-    my  $b = node(2,4);
-    my  $c = node(6,12);
-    my  $d = node(5,10);
-    my  $e = node(4,8);
-    my  $f = node(3,6);
-    $a->right = $b; $b->up = $a;
-    $b->right = $c; $c->up = $b;
-    $c->left  = $d; $d->up = $c;
-    $d->left  = $e; $e->up = $d;
-    $e->left  = $f; $f->up = $e;
-    $f->setHeights(1);
-    is_deeply $a->printKeys, <<END;
-  SA0 6 1
-  Rr1 5   2->1
-  Lz5 1           3->4
-  Ll4 2         4->5
-  Ll3 3       5->6
-  Rl2 4     6->2
-  END
-  #save $a;
-
-    $b->balance;
-    is_deeply $a->printKeys, <<END;
-  SA0 5 1
-  Lr2 3     2->5
-  Lz4 1         3->4
-  Rl3 2       4->2
-  Rd1 4   5->1
-  Rz2 1     6->5
-  END
-  #save $a;
    }
 
 
@@ -992,44 +1028,10 @@ B<Example:>
   if (1)
    {lll "Balance";
     my  $t = Tree::Bulk::new->setKeysPerNode(1);
-
     ok $t->empty;
 
     ok $t->singleton;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
 
-
-    my  $a = node(1,2);
-    my  $b = node(2,4);
-    my  $c = node(6,12);
-    my  $d = node(5,10);
-    my  $e = node(4,8);
-    my  $f = node(3,6);
-    $a->right = $b; $b->up = $a;
-    $b->right = $c; $c->up = $b;
-    $c->left  = $d; $d->up = $c;
-    $d->left  = $e; $e->up = $d;
-    $e->left  = $f; $f->up = $e;
-    $f->setHeights(1);
-    is_deeply $a->printKeys, <<END;
-  SA0 6 1
-  Rr1 5   2->1
-  Lz5 1           3->4
-  Ll4 2         4->5
-  Ll3 3       5->6
-  Rl2 4     6->2
-  END
-  #save $a;
-
-    $b->balance;
-    is_deeply $a->printKeys, <<END;
-  SA0 5 1
-  Lr2 3     2->5
-  Lz4 1         3->4
-  Rl3 2       4->2
-  Rd1 4   5->1
-  Rz2 1     6->5
-  END
-  #save $a;
    }
 
 
@@ -1211,64 +1213,9 @@ B<Example:>
    }
 
 
-=head2 setHeights($tree, $from)
+=head2 names($tree)
 
-Set heights along path to root
-
-     Parameter  Description
-  1  $tree      Tree
-  2  $from      Height for this node
-
-B<Example:>
-
-
-  if (1)
-   {lll "Balance";
-    my  $t = Tree::Bulk::new->setKeysPerNode(1);
-
-    ok $t->empty;
-    ok $t->singleton;
-
-    my  $a = node(1,2);
-    my  $b = node(2,4);
-    my  $c = node(6,12);
-    my  $d = node(5,10);
-    my  $e = node(4,8);
-    my  $f = node(3,6);
-    $a->right = $b; $b->up = $a;
-    $b->right = $c; $c->up = $b;
-    $c->left  = $d; $d->up = $c;
-    $d->left  = $e; $e->up = $d;
-    $e->left  = $f; $f->up = $e;
-
-    $f->setHeights(1);  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
-
-    is_deeply $a->printKeys, <<END;
-  SA0 6 1
-  Rr1 5   2->1
-  Lz5 1           3->4
-  Ll4 2         4->5
-  Ll3 3       5->6
-  Rl2 4     6->2
-  END
-  #save $a;
-
-    $b->balance;
-    is_deeply $a->printKeys, <<END;
-  SA0 5 1
-  Lr2 3     2->5
-  Lz4 1         3->4
-  Rl3 2       4->2
-  Rd1 4   5->1
-  Rz2 1     6->5
-  END
-  #save $a;
-   }
-
-
-=head2 actualHeight($tree)
-
-Get the height of a node
+Names of all nodes in a tree in order
 
      Parameter  Description
   1  $tree      Tree
@@ -1277,124 +1224,49 @@ B<Example:>
 
 
   if (1)
-   {my $N = 22;
-    my $t = Tree::Bulk::new;
-    ok $t->empty;
-    ok $t->leaf;
+   {my sub randomLoad($$$)                                                        # Randomly load different size nodes
+     {my ($N, $keys, $height) = @_;                                               # Number of elements, number of keys per node, expected height
 
-    for(1..$N)
-     {$t->insert($_, 2 * $_);
+      lll "Random load $keys";
+
+      srand(1);                                                                   # Same randomization
+      my $t = Tree::Bulk::new->setKeysPerNode($keys);
+      for my $r(randomizeArray 1..$N)
+       {$debug = $r == 74;
+        $t->insert($r, 2 * $r);
+        $t->check;
+       }
+
+      is_deeply $t->actualHeight, $height;                                        # Check height
+      confess unless $t->actualHeight == $height;
+
+      is_deeply join(' ', 1..$N), $t->names;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+
+      my %t = map {$_=>2*$_}   1..$N;
+      for my $r(randomizeArray 1..$N)                                             # Delete in random order
+       {$t->delete   ($r);
+            delete $t{$r};
+        checkAgainstHash $t, %t;
+        check($t);
+       }
+
+      ok $t->empty;
+      is_deeply $t->actualHeight, 1;
      }
 
-    ok $t->right->duplex;
-
-    is_deeply actualHeight($t), 4;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
-
-
-    is_deeply $t->printKeys, <<END;
-  SA0 4 1 2 3 4
-  Lz2 1     5 6 7 8->9 10 11 12
-  Rd1 3   9 10 11 12->1 2 3 4
-  Lz3 1       13 14 15 16->17 18 19 20
-  Rd2 2     17 18 19 20->9 10 11 12
-  Rz3 1       21 22->17 18 19 20
-  END
-  #save $t;
-
-    is_deeply $t->printKeysAndData, <<END;
-   1   2
-   2   4
-   3   6
-   4   8
-   5  10
-   6  12
-   7  14
-   8  16
-   9  18
-  10  20
-  11  22
-  12  24
-  13  26
-  14  28
-  15  30
-  16  32
-  17  34
-  18  36
-  19  38
-  20  40
-  21  42
-  22  44
-  END
-
-    my %t = map {$_=>2*$_} 1..$N;
-
-    for(map {2 * $_} 1..$N/2)
-     {$t->delete($_);
-      delete $t{$_};
-      checkAgainstHash $t, %t;
-     }
-
-    is_deeply $t->printKeys, <<END;
-  SA0 3 1 3 5 7
-  Lz2 1     9 11 13->15 17 19 21
-  Rl1 2   15 17 19 21->1 3 5 7
-  END
-  #save($t);
-
-    is_deeply $t->printKeysAndData, <<END;
-   1   2
-   3   6
-   5  10
-   7  14
-   9  18
-  11  22
-  13  26
-  15  30
-  17  34
-  19  38
-  21  42
-  END
-
-    for(map {2 * $_-1} 1..$N/2)
-     {$t->delete($_);
-      delete $t{$_};
-      checkAgainstHash $t, %t;
-     }
-
-    is_deeply $t->printKeys, <<END;
-  Sz0 1
-  END
-  #save($t);
+    randomLoad(222, 1, 11);
+    randomLoad(222, 8, 8);
+    randomLoad(222, 4, 9);
    }
 
 
-=head2 maximum($a, $b)
-
-Maximum of two numbers
-
-     Parameter  Description
-  1  $a         First
-  2  $b         Second
-
-B<Example:>
-
-
-  if (1)
-
-   {is_deeply maximum(1,2), 2;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
-
-
-    is_deeply maximum(2,1), 2;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
-
-   }
-
-
-=head2 balance($tree)
+=head2 balance($t)
 
 Balance a node
 
      Parameter  Description
-  1  $tree      Tree
+  1  $t         Tree
 
 B<Example:>
 
@@ -1403,15 +1275,12 @@ B<Example:>
    {lll "Balance";
     my  $t = Tree::Bulk::new->setKeysPerNode(1);
 
-    ok $t->empty;
-    ok $t->singleton;
-
-    my  $a = node(1,2);
-    my  $b = node(2,4);
-    my  $c = node(6,12);
-    my  $d = node(5,10);
-    my  $e = node(4,8);
-    my  $f = node(3,6);
+    my  $a = node(1,2) ->setKeysPerNode(1);
+    my  $b = node(2,4) ->setKeysPerNode(1);
+    my  $c = node(6,12)->setKeysPerNode(1);
+    my  $d = node(5,10)->setKeysPerNode(1);
+    my  $e = node(4,8) ->setKeysPerNode(1);
+    my  $f = node(3,6) ->setKeysPerNode(1);
     $a->right = $b; $b->up = $a;
     $b->right = $c; $c->up = $b;
     $c->left  = $d; $d->up = $c;
@@ -1419,12 +1288,12 @@ B<Example:>
     $e->left  = $f; $f->up = $e;
     $f->setHeights(1);
     is_deeply $a->printKeys, <<END;
-  SA0 6 1
-  Rr1 5   2->1
-  Lz5 1           3->4
-  Ll4 2         4->5
-  Ll3 3       5->6
-  Rl2 4     6->2
+  SA0 4 1
+  Lr2 2     2->4
+  Rz3 1       3->2
+  Rd1 3   4->1
+  Lz3 1       5->6
+  Rl2 2     6->4
   END
   #save $a;
 
@@ -1432,12 +1301,12 @@ B<Example:>
     $b->balance;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
 
     is_deeply $a->printKeys, <<END;
-  SA0 5 1
-  Lr2 3     2->5
-  Lz4 1         3->4
-  Rl3 2       4->2
-  Rd1 4   5->1
-  Rz2 1     6->5
+  SA0 4 1
+  Lr2 2     2->4
+  Rz3 1       3->2
+  Rd1 3   4->1
+  Lz3 1       5->6
+  Rl2 2     6->4
   END
   #save $a;
    }
@@ -1539,7 +1408,7 @@ B<Example:>
      {$t->insert($_, 2*$_);
      }
 
-    is_deeply $t->actualHeight, 7;
+    is_deeply $t->actualHeight, 10;
 
     if (1)
      {my @n;
@@ -1597,7 +1466,7 @@ B<Example:>
      {$t->insert($_, 2*$_);
      }
 
-    is_deeply $t->actualHeight, 7;
+    is_deeply $t->actualHeight, 10;
 
     if (1)
      {my @n;
@@ -1655,7 +1524,7 @@ B<Example:>
      {$t->insert($_, 2*$_);
      }
 
-    is_deeply $t->actualHeight, 7;
+    is_deeply $t->actualHeight, 10;
 
     if (1)
      {my @n;
@@ -1713,7 +1582,7 @@ B<Example:>
      {$t->insert($_, 2*$_);
      }
 
-    is_deeply $t->actualHeight, 7;
+    is_deeply $t->actualHeight, 10;
 
     if (1)
      {my @n;
@@ -1771,7 +1640,7 @@ B<Example:>
      {$t->insert($_, 2*$_);
      }
 
-    is_deeply $t->actualHeight, 7;
+    is_deeply $t->actualHeight, 10;
 
     if (1)
      {my @n;
@@ -1909,8 +1778,8 @@ B<Example:>
 
       is_deeply $t->printKeys, <<END if $k == 4;
   SA0 3 1
-  Lz2 1     2->3
-  Rl1 2   3->1
+  Rr1 2   2->1
+  Rz2 1     3->2
   END
   #save $t if $k == 4;
 
@@ -2163,8 +2032,8 @@ B<Example:>
 
     is_deeply $t->printKeys, <<END;
   SA0 3 1 3 5 7
-  Lz2 1     9 11 13->15 17 19 21
-  Rl1 2   15 17 19 21->1 3 5 7
+  Rr1 2   9 11 13 15->1 3 5 7
+  Rz2 1     17 19 21->9 11 13 15
   END
   #save($t);
 
@@ -2272,12 +2141,186 @@ Create a new bulk tree node
   3  $up        Parent node
   4  $side      Side of parent node
 
-=head2 updateHeights($n)
+=head2 setHeights($tree)
 
-Update height of rotated node
+Set heights along path to root
 
      Parameter  Description
-  1  $n         Tree
+  1  $tree      Tree
+
+B<Example:>
+
+
+  if (1)
+   {lll "Balance";
+    my  $t = Tree::Bulk::new->setKeysPerNode(1);
+
+    my  $a = node(1,2) ->setKeysPerNode(1);
+    my  $b = node(2,4) ->setKeysPerNode(1);
+    my  $c = node(6,12)->setKeysPerNode(1);
+    my  $d = node(5,10)->setKeysPerNode(1);
+    my  $e = node(4,8) ->setKeysPerNode(1);
+    my  $f = node(3,6) ->setKeysPerNode(1);
+    $a->right = $b; $b->up = $a;
+    $b->right = $c; $c->up = $b;
+    $c->left  = $d; $d->up = $c;
+    $d->left  = $e; $e->up = $d;
+    $e->left  = $f; $f->up = $e;
+
+    $f->setHeights(1);  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+    is_deeply $a->printKeys, <<END;
+  SA0 4 1
+  Lr2 2     2->4
+  Rz3 1       3->2
+  Rd1 3   4->1
+  Lz3 1       5->6
+  Rl2 2     6->4
+  END
+  #save $a;
+
+    $b->balance;
+    is_deeply $a->printKeys, <<END;
+  SA0 4 1
+  Lr2 2     2->4
+  Rz3 1       3->2
+  Rd1 3   4->1
+  Lz3 1       5->6
+  Rl2 2     6->4
+  END
+  #save $a;
+   }
+
+
+=head2 actualHeight($tree)
+
+Get the height of a node
+
+     Parameter  Description
+  1  $tree      Tree
+
+B<Example:>
+
+
+  if (1)
+   {my $N = 22;
+    my $t = Tree::Bulk::new;
+    ok $t->empty;
+    ok $t->leaf;
+
+    for(1..$N)
+     {$t->insert($_, 2 * $_);
+     }
+
+    ok $t->right->duplex;
+
+    is_deeply actualHeight($t), 4;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+
+    is_deeply $t->printKeys, <<END;
+  SA0 4 1 2 3 4
+  Lz2 1     5 6 7 8->9 10 11 12
+  Rd1 3   9 10 11 12->1 2 3 4
+  Lz3 1       13 14 15 16->17 18 19 20
+  Rd2 2     17 18 19 20->9 10 11 12
+  Rz3 1       21 22->17 18 19 20
+  END
+  #save $t;
+
+    is_deeply $t->printKeysAndData, <<END;
+   1   2
+   2   4
+   3   6
+   4   8
+   5  10
+   6  12
+   7  14
+   8  16
+   9  18
+  10  20
+  11  22
+  12  24
+  13  26
+  14  28
+  15  30
+  16  32
+  17  34
+  18  36
+  19  38
+  20  40
+  21  42
+  22  44
+  END
+
+    my %t = map {$_=>2*$_} 1..$N;
+
+    for(map {2 * $_} 1..$N/2)
+     {$t->delete($_);
+      delete $t{$_};
+      checkAgainstHash $t, %t;
+     }
+
+    is_deeply $t->printKeys, <<END;
+  SA0 3 1 3 5 7
+  Rr1 2   9 11 13 15->1 3 5 7
+  Rz2 1     17 19 21->9 11 13 15
+  END
+  #save($t);
+
+    is_deeply $t->printKeysAndData, <<END;
+   1   2
+   3   6
+   5  10
+   7  14
+   9  18
+  11  22
+  13  26
+  15  30
+  17  34
+  19  38
+  21  42
+  END
+
+    for(map {2 * $_-1} 1..$N/2)
+     {$t->delete($_);
+      delete $t{$_};
+      checkAgainstHash $t, %t;
+     }
+
+    is_deeply $t->printKeys, <<END;
+  Sz0 1
+  END
+  #save($t);
+   }
+
+
+=head2 maximum($a, $b)
+
+Maximum of two numbers
+
+     Parameter  Description
+  1  $a         First
+  2  $b         Second
+
+B<Example:>
+
+
+  if (1)
+
+   {is_deeply maximum(1,2), 2;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+
+    is_deeply maximum(2,1), 2;  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
+
+   }
+
+
+=head2 setHeight($tree)
+
+Set height of a tree from its left and right trees
+
+     Parameter  Description
+  1  $tree      Tree
 
 =head2 rotateLeft($n)
 
@@ -2291,23 +2334,20 @@ B<Example:>
 
   if (1)
    {lll "Rotate";
-    my  $t = Tree::Bulk::new->setKeysPerNode(1);
-    my  $a = node(1,2);
-    my  $b = node(2,4);
-    my  $c = node(3,6);
-    my  $d = node(4,8);
+    my  $a = node(1,2)->setKeysPerNode(1);
+    my  $b = node(2,4)->setKeysPerNode(1);
+    my  $c = node(3,6)->setKeysPerNode(1);
+    my  $d = node(4,8)->setKeysPerNode(1);
     $a->right = $b; $b->up = $a;
     $b->right = $c; $c->up = $b;
     $c->right = $d; $d->up = $c;
     $d->setHeights(1);
 
-    ok $c->simplex;
-
     is_deeply $a->printKeys, <<END;
-  SA0 4 1
-  Rr1 3   2->1
-  Rr2 2     3->2
-  Rz3 1       4->3
+  SA0 3 1
+  Lz2 1     2->3
+  Rd1 2   3->1
+  Rz2 1     4->3
   END
   #save $a;
 
@@ -2325,10 +2365,10 @@ B<Example:>
     $c->rotateLeft; $c->setHeights(2);  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
 
     is_deeply $a->printKeys, <<END;
-  SA0 4 1
-  Lz3 1       2->3
-  Ll2 2     3->4
-  Rl1 3   4->1
+  SA0 3 1
+  Lz2 1     2->3
+  Rd1 2   3->1
+  Rz2 1     4->3
   END
   #save $a;
 
@@ -2343,10 +2383,10 @@ B<Example:>
 
     $c->rotateRight; $c->setHeights(2);
     is_deeply $a->printKeys, <<END;
-  SA0 4 1
-  Rr1 3   2->1
-  Rr2 2     3->2
-  Rz3 1       4->3
+  SA0 3 1
+  Lz2 1     2->3
+  Rd1 2   3->1
+  Rz2 1     4->3
   END
   #save $a;
    }
@@ -2364,23 +2404,20 @@ B<Example:>
 
   if (1)
    {lll "Rotate";
-    my  $t = Tree::Bulk::new->setKeysPerNode(1);
-    my  $a = node(1,2);
-    my  $b = node(2,4);
-    my  $c = node(3,6);
-    my  $d = node(4,8);
+    my  $a = node(1,2)->setKeysPerNode(1);
+    my  $b = node(2,4)->setKeysPerNode(1);
+    my  $c = node(3,6)->setKeysPerNode(1);
+    my  $d = node(4,8)->setKeysPerNode(1);
     $a->right = $b; $b->up = $a;
     $b->right = $c; $c->up = $b;
     $c->right = $d; $d->up = $c;
     $d->setHeights(1);
 
-    ok $c->simplex;
-
     is_deeply $a->printKeys, <<END;
-  SA0 4 1
-  Rr1 3   2->1
-  Rr2 2     3->2
-  Rz3 1       4->3
+  SA0 3 1
+  Lz2 1     2->3
+  Rd1 2   3->1
+  Rz2 1     4->3
   END
   #save $a;
     $b->rotateLeft;
@@ -2394,10 +2431,10 @@ B<Example:>
 
     $c->rotateLeft; $c->setHeights(2);
     is_deeply $a->printKeys, <<END;
-  SA0 4 1
-  Lz3 1       2->3
-  Ll2 2     3->4
-  Rl1 3   4->1
+  SA0 3 1
+  Lz2 1     2->3
+  Rd1 2   3->1
+  Rz2 1     4->3
   END
   #save $a;
 
@@ -2416,10 +2453,10 @@ B<Example:>
     $c->rotateRight; $c->setHeights(2);  # 𝗘𝘅𝗮𝗺𝗽𝗹𝗲
 
     is_deeply $a->printKeys, <<END;
-  SA0 4 1
-  Rr1 3   2->1
-  Rr2 2     3->2
-  Rz3 1       4->3
+  SA0 3 1
+  Lz2 1     2->3
+  Rd1 2   3->1
+  Rz2 1     4->3
   END
   #save $a;
    }
@@ -2433,6 +2470,27 @@ Insert a key and some data into a tree
   1  $tree      Tree
   2  $key       Key
   3  $data      Data
+
+=head2 unchain($t)
+
+Remove a tree from the middle of a chain. A leaf is considered to be in the middle of a chain and so can be removed with this method
+
+     Parameter  Description
+  1  $t         Tree
+
+=head2 refillFromRight($target)
+
+Push a key to the target node from the next node
+
+     Parameter  Description
+  1  $target    Target tree
+
+=head2 refillFromLeft($target)
+
+Push a key to the target node from the previous node
+
+     Parameter  Description
+  1  $target    Target tree
 
 =head2 refill($tree)
 
@@ -2450,7 +2508,7 @@ print the keys for a tree
   2  $in        Indentation
   3  $g         List of keys
 
-=head2 checkLR($tree)
+=head2 checkLRU($tree)
 
 Confirm pointers in tree
 
@@ -2484,7 +2542,7 @@ Check a tree against a hash
 
 4 L<checkAgainstHash|/checkAgainstHash> - Check a tree against a hash
 
-5 L<checkLR|/checkLR> - Confirm pointers in tree
+5 L<checkLRU|/checkLRU> - Confirm pointers in tree
 
 6 L<delete|/delete> - Delete a key in a tree
 
@@ -2516,35 +2574,45 @@ Check a tree against a hash
 
 20 L<name|/name> - Name of a tree
 
-21 L<next|/next> - Next node in order
+21 L<names|/names> - Names of all nodes in a tree in order
 
-22 L<node|/node> - Create a new bulk tree node
+22 L<next|/next> - Next node in order
 
-23 L<prev|/prev> - Previous node in order
+23 L<node|/node> - Create a new bulk tree node
 
-24 L<printKeys|/printKeys> - Print the keys in a tree
+24 L<prev|/prev> - Previous node in order
 
-25 L<printKeys2|/printKeys2> - print the keys for a tree
+25 L<printKeys|/printKeys> - Print the keys in a tree
 
-26 L<printKeysAndData|/printKeysAndData> - Print the mapping from keys to data in a tree
+26 L<printKeys2|/printKeys2> - print the keys for a tree
 
-27 L<refill|/refill> - Refill a node so it has the expected number of keys
+27 L<printKeysAndData|/printKeysAndData> - Print the mapping from keys to data in a tree
 
-28 L<root|/root> - Return the root node of a tree
+28 L<refill|/refill> - Refill a node so it has the expected number of keys
 
-29 L<rotateLeft|/rotateLeft> - Rotate a node left
+29 L<refillFromLeft|/refillFromLeft> - Push a key to the target node from the previous node
 
-30 L<rotateRight|/rotateRight> - Rotate a node right
+30 L<refillFromRight|/refillFromRight> - Push a key to the target node from the next node
 
-31 L<setHeights|/setHeights> - Set heights along path to root
+31 L<root|/root> - Return the root node of a tree
 
-32 L<setKeysPerNode|/setKeysPerNode> - Set the number of keys for the current node
+32 L<rotateLeft|/rotateLeft> - Rotate a node left
 
-33 L<simplex|/simplex> - Return the tree if it has either a left child or a right child but not both.
+33 L<rotateRight|/rotateRight> - Rotate a node right
 
-34 L<singleton|/singleton> - Return the tree if it contains only the root node and nothing else
+34 L<setHeight|/setHeight> - Set height of a tree from its left and right trees
 
-35 L<updateHeights|/updateHeights> - Update height of rotated node
+35 L<setHeights|/setHeights> - Set heights along path to root
+
+36 L<setKeysPerNode|/setKeysPerNode> - Set the number of keys for the current node
+
+37 L<simplex|/simplex> - Return the tree if it has either a left child or a right child but not both.
+
+38 L<simplexWithLeaf|/simplexWithLeaf> - Return the tree if it has either a left child or a right child but not both and the child it has a leaf.
+
+39 L<singleton|/singleton> - Return the tree if it contains only the root node and nothing else
+
+40 L<unchain|/unchain> - Remove a tree from the middle of a chain.
 
 =head1 Installation
 
@@ -2587,7 +2655,7 @@ test unless caller;
 
 1;
 # podDocumentation
-__DATA__
+#__DATA__
 use Time::HiRes qw(time);
 use Test::More;
 
@@ -2595,32 +2663,201 @@ my $localTest = ((caller(1))[0]//'Tree::Bulk') eq "Tree::Bulk";                 
 
 Test::More->builder->output("/dev/null") if $localTest;                         # Reduce number of confirmation messages during testing
 
-if ($^O =~ m(bsd|linux)i) {plan tests => 69}                                    # Supported systems
+if ($^O =~ m(bsd|linux)i) {plan tests => 90}                                    # Supported systems
 else
  {plan skip_all =>qq(Not supported on: $^O);
  }
 
 my $start = time;                                                               # Tests
+#goto latest;
 
-if (1)                                                                          #TrotateLeft #TrotateRight #Tsimplex
- {lll "Rotate";
+if (1)                                                                          #Tsimplex
+ {lll "SetHeights";
+  my  $a = node(1,1)->setKeysPerNode(1);
+  my  $b = node(2,2)->setKeysPerNode(1);
+  my  $c = node(3,3)->setKeysPerNode(1);
+  my  $d = node(4,4)->setKeysPerNode(1);
+  my  $e = node(5,5);
+  $a->right = $b; $b->up = $a;
+  $b->right = $c; $c->up = $b;
+  $c->right = $d; $d->up = $c;
+  $d->right = $e; $e->up = $d;
+
+  is_deeply $a->printKeys, <<END;
+SA0 1 1
+Rr1 1   2->1
+Rr2 1     3->2
+Rr3 1       4->3
+Rz4 1         5->4
+END
+#save $a;
+
+  $e->setHeights(1);
+  is_deeply $a->printKeys, <<END;
+SA0 4 1
+Rr1 3   2->1
+Lz3 1       3->4
+Rd2 2     4->2
+Rz3 1       5->4
+END
+#save $a;
+  ok  $b->simplex;
+  ok !$c->simplex;
+
+  $c->balance;
+  is_deeply $a->printKeys, <<END;
+SA0 4 1
+Rr1 3   2->1
+Lz3 1       3->4
+Rd2 2     4->2
+Rz3 1       5->4
+END
+#save $a;
+
+  $b->balance;
+  is_deeply $a->printKeys, <<END;
+SA0 4 1
+Lr2 2     2->4
+Rz3 1       3->2
+Rd1 3   4->1
+Rz2 1     5->4
+END
+#save $a;
+ }
+
+if (1)                                                                          #TsimplexWithLeaf
+ {lll "Balance";
+  my  $a = node(1,1)->setKeysPerNode(1); $a->height = 5;
+  my  $b = node(2,2)->setKeysPerNode(1); $b->height = 4;
+  my  $c = node(3,3)->setKeysPerNode(1); $c->height = 3;
+  my  $d = node(4,4)->setKeysPerNode(1); $d->height = 2;
+  my  $e = node(5,5);                    $e->height = 1;
+  $a->right = $b; $b->up = $a;
+  $b->right = $c; $c->up = $b;
+  $c->right = $d; $d->up = $c;
+  $d->right = $e; $e->up = $d;
+
+  $e->balance;
+  is_deeply $a->printKeys, <<END;
+SA0 5 1
+Rr1 4   2->1
+Rr2 3     3->2
+Rr3 2       4->3
+Rz4 1         5->4
+END
+#save $a;
+  ok  $d->simplexWithLeaf;
+  ok !$c->simplexWithLeaf;
+
+  $d->balance;
+  is_deeply $a->printKeys, <<END;
+SA0 5 1
+Rr1 4   2->1
+Rr2 3     3->2
+Rr3 2       4->3
+Rz4 1         5->4
+END
+#save $a;
+
+  $c->balance;
+  is_deeply $a->printKeys, <<END;
+SA0 5 1
+Rr1 3   2->1
+Lz3 1       3->4
+Rd2 2     4->2
+Rz3 1       5->4
+END
+#save $a;
+
+  $b->balance;
+  is_deeply $a->printKeys, <<END;
+SA0 4 1
+Lr2 2     2->4
+Rz3 1       3->2
+Rd1 3   4->1
+Rz2 1     5->4
+END
+#save $a;
+ }
+
+if (1)
+ {lll "Leaf becomes non leaf";
+  my  $a = node(14,1)->setKeysPerNode(1); $a->height = 4;
+  my  $b = node(5,2) ->setKeysPerNode(1); $b->height = 3;
+  my  $c = node(4,3) ->setKeysPerNode(1); $c->height = 1;
+  my  $d = node(9,4) ->setKeysPerNode(1); $d->height = 1;
+  my  $e = node(10,5);                    $e->height = 2;
+  $a->left  = $b; $b->up = $a;
+  $b->left  = $c; $c->up = $b;
+  $b->right = $e; $e->up = $b;
+  $e->left  = $d; $d->up = $e;
+
+  is_deeply $a->printKeys, <<END;
+Lz2 1     4->5
+Ld1 3   5->14
+Lz3 1       9->10
+Rl2 2     10->5
+SA0 4 14
+END
+#save $a;
+
+  $a->delete(4);
+  is_deeply $a->printKeys, <<END;
+Lz2 1     5->9
+Ld1 2   9->14
+Rz2 1     10->9
+SA0 3 14
+END
+#save $a;
+ }
+
+if (1)
+ {lll "Unchain";
   my  $t = Tree::Bulk::new->setKeysPerNode(1);
   my  $a = node(1,2);
   my  $b = node(2,4);
   my  $c = node(3,6);
   my  $d = node(4,8);
+  my  $e = node(5,10);
+  $a->right = $b; $b->up = $a;
+  $b->right = $d; $d->up = $b;
+  $d->left  = $c; $c->up = $d;
+  $d->right = $e; $e->up = $d;
+
+  is_deeply $a->printKeys, <<END;
+SA0 1 1
+Rr1 1   2->1
+Lz3 1       3->4
+Rd2 1     4->2
+Rz3 1       5->4
+END
+#save $a;
+  $b->unchain;
+  is_deeply $a->printKeys, <<END;
+SA0 3 1
+Lz2 1     3->4
+Rd1 2   4->1
+Rz2 1     5->4
+END
+#save $a;
+ }
+
+if (1)                                                                          #TrotateLeft #TrotateRight
+ {lll "Rotate";
+  my  $a = node(1,2)->setKeysPerNode(1);
+  my  $b = node(2,4)->setKeysPerNode(1);
+  my  $c = node(3,6)->setKeysPerNode(1);
+  my  $d = node(4,8)->setKeysPerNode(1);
   $a->right = $b; $b->up = $a;
   $b->right = $c; $c->up = $b;
   $c->right = $d; $d->up = $c;
   $d->setHeights(1);
 
-  ok $c->simplex;
-
   is_deeply $a->printKeys, <<END;
-SA0 4 1
-Rr1 3   2->1
-Rr2 2     3->2
-Rz3 1       4->3
+SA0 3 1
+Lz2 1     2->3
+Rd1 2   3->1
+Rz2 1     4->3
 END
 #save $a;
   $b->rotateLeft;
@@ -2634,10 +2871,10 @@ END
 
   $c->rotateLeft; $c->setHeights(2);
   is_deeply $a->printKeys, <<END;
-SA0 4 1
-Lz3 1       2->3
-Ll2 2     3->4
-Rl1 3   4->1
+SA0 3 1
+Lz2 1     2->3
+Rd1 2   3->1
+Rz2 1     4->3
 END
 #save $a;
 
@@ -2652,10 +2889,10 @@ END
 
   $c->rotateRight; $c->setHeights(2);
   is_deeply $a->printKeys, <<END;
-SA0 4 1
-Rr1 3   2->1
-Rr2 2     3->2
-Rz3 1       4->3
+SA0 3 1
+Lz2 1     2->3
+Rd1 2   3->1
+Rz2 1     4->3
 END
 #save $a;
  }
@@ -2665,19 +2902,23 @@ if (1)                                                                          
   is_deeply maximum(2,1), 2;
  }
 
-if (1)                                                                          #Tbalance #Tempty #Tsingleton #TsetHeights
+if (1)                                                                          #Tempty #Tsingleton
+ {lll "Balance";
+  my  $t = Tree::Bulk::new->setKeysPerNode(1);
+  ok $t->empty;
+  ok $t->singleton;
+ }
+
+if (1)                                                                          #Tbalance #TsetHeights
  {lll "Balance";
   my  $t = Tree::Bulk::new->setKeysPerNode(1);
 
-  ok $t->empty;
-  ok $t->singleton;
-
-  my  $a = node(1,2);
-  my  $b = node(2,4);
-  my  $c = node(6,12);
-  my  $d = node(5,10);
-  my  $e = node(4,8);
-  my  $f = node(3,6);
+  my  $a = node(1,2) ->setKeysPerNode(1);
+  my  $b = node(2,4) ->setKeysPerNode(1);
+  my  $c = node(6,12)->setKeysPerNode(1);
+  my  $d = node(5,10)->setKeysPerNode(1);
+  my  $e = node(4,8) ->setKeysPerNode(1);
+  my  $f = node(3,6) ->setKeysPerNode(1);
   $a->right = $b; $b->up = $a;
   $b->right = $c; $c->up = $b;
   $c->left  = $d; $d->up = $c;
@@ -2685,23 +2926,23 @@ if (1)                                                                          
   $e->left  = $f; $f->up = $e;
   $f->setHeights(1);
   is_deeply $a->printKeys, <<END;
-SA0 6 1
-Rr1 5   2->1
-Lz5 1           3->4
-Ll4 2         4->5
-Ll3 3       5->6
-Rl2 4     6->2
+SA0 4 1
+Lr2 2     2->4
+Rz3 1       3->2
+Rd1 3   4->1
+Lz3 1       5->6
+Rl2 2     6->4
 END
 #save $a;
 
   $b->balance;
   is_deeply $a->printKeys, <<END;
-SA0 5 1
-Lr2 3     2->5
-Lz4 1         3->4
-Rl3 2       4->2
-Rd1 4   5->1
-Rz2 1     6->5
+SA0 4 1
+Lr2 2     2->4
+Rz3 1       3->2
+Rd1 3   4->1
+Lz3 1       5->6
+Rl2 2     6->4
 END
 #save $a;
  }
@@ -2848,8 +3089,8 @@ END
 
     is_deeply $t->printKeys, <<END if $k == 4;
 SA0 3 1
-Lz2 1     2->3
-Rl1 2   3->1
+Rr1 2   2->1
+Rz2 1     3->2
 END
 #save $t if $k == 4;
 
@@ -3019,8 +3260,8 @@ END
 
   is_deeply $t->printKeys, <<END;
 SA0 3 1 3 5 7
-Lz2 1     9 11 13->15 17 19 21
-Rl1 2   15 17 19 21->1 3 5 7
+Rr1 2   9 11 13 15->1 3 5 7
+Rz2 1     17 19 21->9 11 13 15
 END
 #save($t);
 
@@ -3075,7 +3316,7 @@ if (1)                                                                          
    {$t->insert($_, 2*$_);
    }
 
-  is_deeply $t->actualHeight, 7;
+  is_deeply $t->actualHeight, 10;
 
   if (1)
    {my @n;
@@ -3112,35 +3353,39 @@ if (1)                                                                          
   is_deeply $t->actualHeight, 1;
  }
 
-if (1)                                                                          # Random order load
- {lll "Random load";
-  my $N = 222; my $M = 7;
-  my @r = 1..$N;
+if (1)                                                                          #Tnames
+ {my sub randomLoad($$$)                                                        # Randomly load different size nodes
+   {my ($N, $keys, $height) = @_;                                               # Number of elements, number of keys per node, expected height
 
-  srand(1);                                                                     # Same sequence
-  for my $i(keys @r)                                                            # Randomize load sequence
-   {my $j = int(rand(@r)) % @r;
-    my $t = $r[$i]; $r[$i] = $r[$j]; $r[$j] = $t;
-   }
+    lll "Random load $keys";
 
-  for my $r(0..1)                                                               # Load
-   {my $t = Tree::Bulk::new;
-    for my $i($r ? keys @r : reverse keys @r)
-     {$t->insert($r[$i], 2 * $r[$i]);
+    srand(1);                                                                   # Same randomization
+    my $t = Tree::Bulk::new->setKeysPerNode($keys);
+    for my $r(randomizeArray 1..$N)
+     {$debug = $r == 74;
+      $t->insert($r, 2 * $r);
+      $t->check;
      }
-    is_deeply $t->actualHeight, $M;                                             # Check height
 
-    my %t = map {$_=>2*$_} 1..$N;
-    my $j = 0;
-    for my $i(sort {$a <=> $b} @r)                                              # Delete
-     {$t->delete   ($i);
-          delete $t{$i};
+    is_deeply $t->actualHeight, $height;                                        # Check height
+    confess unless $t->actualHeight == $height;
+    is_deeply join(' ', 1..$N), $t->names;
+
+    my %t = map {$_=>2*$_}   1..$N;
+    for my $r(randomizeArray 1..$N)                                             # Delete in random order
+     {$t->delete   ($r);
+          delete $t{$r};
       checkAgainstHash $t, %t;
+      check($t);
      }
 
     ok $t->empty;
     is_deeply $t->actualHeight, 1;
    }
+
+  randomLoad(222, 1, 11);
+  randomLoad(222, 8, 8);
+  randomLoad(222, 4, 9);
  }
 
 if (1)                                                                          #Tfind
