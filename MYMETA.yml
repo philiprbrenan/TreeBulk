@@ -15,7 +15,7 @@ name: Tree-Bulk
 provides:
   Tree::Bulk:
     file: lib/Tree/Bulk.pm
-    version: '20210226'
+    version: '20210301'
 requires:
   Carp: '0'
   Data::Dump: '0'
@@ -27,5 +27,5 @@ resources:
   bugtracker: https://github.com/philiprbrenan/TreeBulk/issues
   license: http://dev.perl.org/licenses/
   repository: https://github.com/philiprbrenan/TreeBulk
-version: '20210226'
+version: '20210301'
 x_serialization_backend: 'CPAN::Meta::YAML version 0.018'
