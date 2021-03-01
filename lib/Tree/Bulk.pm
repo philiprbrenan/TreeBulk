@@ -391,9 +391,9 @@ sub unchain($)                                                                  
   $c->up = $p if $c;
   $t->up = undef;
 
-  if    (my $l = $p->left)  {$l->setHeights($l->height)}                        # Set heights from a known point
-  elsif (my $r = $p->right) {$r->setHeights($r->height)}
-  else                      {$p->setHeights(1)}
+  if    (my $l = $p->left)  {$l->setHeights}                                    # Set heights from a known point
+  elsif (my $r = $p->right) {$r->setHeights}
+  else                      {$p->setHeights}
 
   $p->balance;                                                                  # Rebalance parent
 
